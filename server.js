@@ -90,7 +90,7 @@ server.post('/webhook', async (req, res) => {
 });
 
 // API endpoint to get messages
-server.get('/api/messages/:waNumber?', async (req, res) => {
+server.get('/api/messages/:waNumber', async (req, res) => {
   try {
     const { waNumber } = req.params;
     let query = db.collection('whatsapp_messages').orderBy('timestamp', 'desc').limit(50);
