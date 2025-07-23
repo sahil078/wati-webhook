@@ -6,7 +6,6 @@ import { getFirestore } from 'firebase-admin/firestore';
 import dotenv from 'dotenv';
 import axios from 'axios';
 
-// Load environment variables
 dotenv.config();
 
 // Express setup
@@ -280,6 +279,62 @@ server.get('/api/messages/:waNumber', async (req, res) => {
         });
     }
 });
+
+// Add this near your other API endpoints
+server.post('/api/wati/send-message', async (req, res) => {
+    try {
+      const { phone, message } = req.body;
+      
+      if (!phone || !message) {
+        return res.status(400).json({ error: "Phone and message are required" });
+      }
+  
+      // 1. First send to WATI API
+      const watiResponse = await axios.post(
+        `https://live-mt-server.wati.io/361402/api/v1/sendSessionMessage/${phone}?messageText=${encodeURIComponent(message)}`,
+        null, // No body needed for this request
+        {
+          headers: {
+            "Authorization": `Bearer ${process.env.WATI_API_TOKEN}`,
+            "Content-Type": "application/json"
+          }
+        }
+      );
+  
+      // 2. Save to Firestore
+      const messageData = {
+        text: message,
+        waId: phone,
+        direction: "outgoing",
+        status: "sent",
+        timestamp: new Date().toISOString(),
+        rawData: {
+          eventType: "sessionMessageSent",
+          whatsappResponse: watiResponse.data
+        }
+      };
+  
+      await db.collection('whatsapp_messages').add(messageData);
+  
+      res.status(200).json({ 
+        success: true,
+        messageId: watiResponse.data.id 
+      });
+  
+    } catch (error) {
+      console.error("Error sending message:", error);
+      
+      // Determine if the error is from WATI or our system
+      const errorMessage = error.response?.data?.message || 
+                          error.message || 
+                          "Failed to send message";
+      
+      res.status(500).json({ 
+        error: errorMessage,
+        details: process.env.NODE_ENV === 'development' ? error.stack : undefined
+      });
+    }
+  });
 
 // Start the server
 httpServer.listen(PORT, () => {
