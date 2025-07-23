@@ -1,4 +1,5 @@
 import express from 'express';
+import { createServer } from 'node:http';
 import cors from 'cors';
 import { initializeApp, cert } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
@@ -8,32 +9,45 @@ import axios from 'axios';
 // Load environment variables
 dotenv.config();
 
-// Initialize Firebase
-const firebaseConfig = {
-  type: process.env.FIREBASE_TYPE,
-  project_id: process.env.FIREBASE_PROJECTID,
-  private_key_id: process.env.FIREBASE_PRIVATE_KEY_ID,
-  private_key: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
-  client_email: process.env.FIREBASE_CLIENT_EMAIL,
-  client_id: process.env.FIREBASE_CLIENT_ID,
-  auth_uri: process.env.FIREBASE_AUTH_URI,
-  token_uri: process.env.FIREBASE_TOKEN_URI,
-  auth_provider_x509_cert_url: process.env.FIREBASE_AUTH_CERT_URL,
-  client_x509_cert_url: process.env.FIREBASE_CLIENT_CERT_URL
-};
-
-const app = initializeApp({
-  credential: cert(firebaseConfig)
-});
-const db = getFirestore(app);
-
 // Express setup
 const server = express();
 const PORT = process.env.PORT || 3000;
 
+// Create HTTP server
+const httpServer = createServer(server);
+
 // Middleware
 server.use(cors());
 server.use(express.json());
+
+// Firebase initialization
+console.log("🔥 Initializing Firebase...");
+console.log("🔥 FIREBASE_PROJECT_ID:", process.env.FIREBASE_PROJECT_ID);
+console.log("🔥 FIREBASE_CLIENT_EMAIL:", process.env.FIREBASE_CLIENT_EMAIL);
+console.log("🔥 FIREBASE_PRIVATE_KEY (partial):", process.env.FIREBASE_PRIVATE_KEY?.slice(0, 30), "...");
+
+if (!process.env.FIREBASE_PROJECT_ID || !process.env.FIREBASE_CLIENT_EMAIL || !process.env.FIREBASE_PRIVATE_KEY) {
+  console.error("❌ Missing Firebase environment variables.");
+  process.exit(1);
+}
+
+let db;
+try {
+  const firebaseApp = initializeApp({
+    credential: cert({
+      projectId: process.env.FIREBASE_PROJECT_ID,
+      clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+      privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+    }),
+  });
+  console.log("✅ Firebase initialized successfully.");
+  
+  db = getFirestore(firebaseApp);
+  server.locals.db = db; // Make db available in routes
+} catch (error) {
+  console.error("❌ Firebase initialization error:", error);
+  process.exit(1);
+}
 
 // WATI Configuration
 const WATI_BASE_URL = 'https://live-mt-server.wati.io/361402/api/v1';
@@ -178,8 +192,23 @@ async function initiateChatWithTemplate(waNumber) {
   }
 }
 
-// Start server
-server.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+// Start the server
+httpServer.listen(PORT, () => {
+  console.log(`Server running on http://localhost:${PORT}`);
   console.log(`Webhook URL: http://localhost:${PORT}/webhook`);
+});
+
+// Graceful shutdown
+process.on("SIGTERM", () => {
+  console.log("SIGTERM signal received: closing HTTP server");
+  httpServer.close(() => {
+    console.log("HTTP server closed");
+  });
+});
+
+process.on("SIGINT", () => {
+  console.log("SIGINT signal received: closing HTTP server");
+  httpServer.close(() => {
+    console.log("HTTP server closed");
+  });
 });
