@@ -53,6 +53,102 @@ try {
 const WATI_BASE_URL = 'https://live-mt-server.wati.io/361402/api/v1';
 const WATI_API_TOKEN = process.env.WATI_API_TOKEN;
 
+// Event Handlers
+async function handleMessage(db, event) {
+  const messageData = {
+    id: event.id,
+    waId: event.waId,
+    text: event.text,
+    type: event.type,
+    timestamp: event.timestamp,
+    status: 'received',
+    direction: 'incoming',
+    rawData: event
+  };
+
+  await db.collection('whatsapp_messages').doc(event.id).set(messageData);
+  return { status: 'message_processed' };
+}
+
+async function handleTemplateMessage(db, event) {
+  const messageData = {
+    id: event.id,
+    waId: event.waId,
+    text: event.text,
+    type: 'template',
+    templateName: event.templateName,
+    timestamp: new Date(event.created).getTime(),
+    status: event.statusString?.toLowerCase() || 'sent',
+    direction: 'outgoing',
+    rawData: event
+  };
+
+  await db.collection('whatsapp_messages').doc(event.id).set(messageData);
+  return { status: 'template_processed' };
+}
+
+async function handleSessionMessage(db, event) {
+  const messageData = {
+    id: event.id,
+    waId: event.waId,
+    text: event.text,
+    type: 'session',
+    timestamp: new Date(event.timestamp).getTime(),
+    status: event.statusString?.toLowerCase() || 'sent',
+    direction: 'outgoing',
+    rawData: event
+  };
+
+  await db.collection('whatsapp_messages').doc(event.id).set(messageData);
+  return { status: 'session_message_processed' };
+}
+
+async function handleDeliveryStatus(db, event) {
+  // Update the existing message with delivery status
+  const messageRef = db.collection('whatsapp_messages').doc(event.id);
+  await messageRef.update({
+    status: 'delivered',
+    deliveredAt: new Date(parseInt(event.timestamp) * 1000),
+    rawDeliveryData: event
+  });
+  return { status: 'delivery_status_updated' };
+}
+
+async function handleReadStatus(db, event) {
+  // Update the existing message with read status
+  const messageRef = db.collection('whatsapp_messages').doc(event.id);
+  await messageRef.update({
+    status: 'read',
+    readAt: new Date(parseInt(event.timestamp) * 1000),
+    rawReadData: event
+  });
+  return { status: 'read_status_updated' };
+}
+
+async function initiateChatWithTemplate(waNumber) {
+  try {
+    const response = await axios.post(
+      `${WATI_BASE_URL}/sendTemplateMessage?whatsappNumber=${waNumber}`,
+      {
+        template_name: "missed_appointment",
+        broadcast_name: `init_${Date.now()}`,
+        parameters: [{ name: "name", value: "Customer" }],
+        channel_number: "27772538155"
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${WATI_API_TOKEN}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+    return true;
+  } catch (error) {
+    console.error('Initiation error:', error.response?.data || error.message);
+    return false;
+  }
+}
+
 // Webhook endpoint
 server.post('/webhook', async (req, res) => {
   try {
@@ -72,12 +168,15 @@ server.post('/webhook', async (req, res) => {
       case 'message':
         result = await handleMessage(db, event);
         break;
+      case 'templateMessageSent':
       case 'templateMessageSent_v2':
         result = await handleTemplateMessage(db, event);
         break;
+      case 'sessionMessageSent':
       case 'sessionMessageSent_v2':
         result = await handleSessionMessage(db, event);
         break;
+      case 'sentMessageDELIVERED':
       case 'sentMessageDELIVERED_v2':
         result = await handleDeliveryStatus(db, event);
         break;
@@ -87,7 +186,7 @@ server.post('/webhook', async (req, res) => {
         break;
       default:
         console.log('Unhandled event type:', event.eventType);
-        result = { status: 'unhandled' };
+        result = { status: 'unhandled', eventType: event.eventType };
     }
 
     // Update event as processed
@@ -133,64 +232,6 @@ server.get('/api/messages/:waNumber', async (req, res) => {
     res.status(500).json({ error: 'Failed to fetch messages' });
   }
 });
-
-// Event handlers
-async function handleMessage(db, event) {
-  const messageData = {
-    id: event.id,
-    waId: event.waId,
-    text: event.text,
-    type: event.type,
-    timestamp: event.timestamp,
-    status: 'received',
-    direction: 'incoming',
-    rawData: event
-  };
-
-  await db.collection('whatsapp_messages').doc(event.id).set(messageData);
-  return { status: 'message_processed' };
-}
-
-async function handleTemplateMessage(db, event) {
-  const messageData = {
-    id: event.id,
-    waId: event.waId,
-    text: event.text,
-    type: 'template',
-    templateName: event.templateName,
-    timestamp: new Date(event.created).getTime(),
-    status: event.statusString.toLowerCase(),
-    direction: 'outgoing',
-    rawData: event
-  };
-
-  await db.collection('whatsapp_messages').doc(event.id).set(messageData);
-  return { status: 'template_processed' };
-}
-
-async function initiateChatWithTemplate(waNumber) {
-  try {
-    const response = await axios.post(
-      `${WATI_BASE_URL}/sendTemplateMessage?whatsappNumber=${waNumber}`,
-      {
-        template_name: "missed_appointment",
-        broadcast_name: `init_${Date.now()}`,
-        parameters: [{ name: "name", value: "Customer" }],
-        channel_number: "27772538155"
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${WATI_API_TOKEN}`,
-          'Content-Type': 'application/json'
-        }
-      }
-    );
-    return true;
-  } catch (error) {
-    console.error('Initiation error:', error.response?.data || error.message);
-    return false;
-  }
-}
 
 // Start the server
 httpServer.listen(PORT, () => {
