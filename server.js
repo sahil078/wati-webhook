@@ -220,12 +220,9 @@ server.get('/api/messages/:waNumber', async (req, res) => {
             const snapshot = await query.get();
 
             if (snapshot.empty) {
-                const initiated = await initiateChatWithTemplate(waNumber);
-                return res.status(202).json({
-                    status: initiated ? 'initiating_chat' : 'initiation_failed',
-                    message: initiated ? 'New conversation started' : 'Failed to start conversation'
-                });
-            }
+                return res.status(200).json([]);
+              }
+              
 
             const messages = snapshot.docs.map(doc => {
                 const data = doc.data();
