@@ -1,6 +1,7 @@
 import express from 'express';
 import { createServer } from 'node:http';
 import cors from 'cors';
+import { Timestamp } from 'firebase-admin/firestore';
 import { initializeApp, cert } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
 import dotenv from 'dotenv';
@@ -59,7 +60,7 @@ async function handleMessage(db, event) {
         waId: event.waId,
         text: event.text,
         type: event.type,
-        timestamp: event.timestamp,
+        timestamp: event.timestamp ? Timestamp.fromMillis(parseInt(event.timestamp) * 1000) : Timestamp.now(),
         status: 'received',
         direction: 'incoming',
         rawData: event
@@ -76,7 +77,7 @@ async function handleTemplateMessage(db, event) {
         text: event.text,
         type: 'template',
         templateName: event.templateName,
-        timestamp: new Date(event.created).getTime(),
+        timestamp: event.created ? Timestamp.fromMillis(new Date(event.created).getTime()) : Timestamp.now(),
         status: event.statusString?.toLowerCase() || 'sent',
         direction: 'outgoing',
         rawData: event
@@ -92,7 +93,7 @@ async function handleSessionMessage(db, event) {
         waId: event.waId,
         text: event.text,
         type: 'session',
-        timestamp: new Date(event.timestamp).getTime(),
+        timestamp: event.timestamp ? Timestamp.fromMillis(new Date(event.timestamp).getTime()) : Timestamp.now(),
         status: event.statusString?.toLowerCase() || 'sent',
         direction: 'outgoing',
         rawData: event
@@ -107,7 +108,7 @@ async function handleDeliveryStatus(db, event) {
     const messageRef = db.collection('whatsapp_messages').doc(event.id);
     await messageRef.update({
         status: 'delivered',
-        deliveredAt: new Date(parseInt(event.timestamp) * 1000),
+        deliveredAt: Timestamp.fromMillis(parseInt(event.timestamp) * 1000),
         rawDeliveryData: event
     });
     return { status: 'delivery_status_updated' };
@@ -118,7 +119,7 @@ async function handleReadStatus(db, event) {
     const messageRef = db.collection('whatsapp_messages').doc(event.id);
     await messageRef.update({
         status: 'read',
-        readAt: new Date(parseInt(event.timestamp) * 1000),
+        readAt: Timestamp.fromMillis(parseInt(event.timestamp) * 1000),
         rawReadData: event
     });
     return { status: 'read_status_updated' };
@@ -157,7 +158,7 @@ server.post('/webhook', async (req, res) => {
         // Store raw event in Firestore
         const eventRef = await db.collection('wati_webhook_events').add({
             ...event,
-            receivedAt: new Date(),
+            receivedAt: Timestamp.now(),
             processed: false
         });
 
@@ -206,16 +207,14 @@ server.get('/api/messages/:waNumber', async (req, res) => {
     try {
         const { waNumber } = req.params;
 
-        // Basic validation
         if (!waNumber) {
             return res.status(400).json({ error: "WhatsApp number is required" });
         }
 
-        // Try the optimized query first
         try {
             const query = db.collection('whatsapp_messages')
                 .where('waId', '==', waNumber)
-                .orderBy('timestamp', 'desc')
+                .orderBy('timestamp', 'asc')
                 .limit(50);
 
             const snapshot = await query.get();
@@ -230,20 +229,51 @@ server.get('/api/messages/:waNumber', async (req, res) => {
 
             const messages = snapshot.docs.map(doc => {
                 const data = doc.data();
+                
+                // Safely handle timestamp conversion
+                let timestampMillis;
+                if (data.timestamp?.toMillis) {
+                    timestampMillis = data.timestamp.toMillis();
+                } else if (typeof data.timestamp === 'string') {
+                    // Handle both Unix timestamp strings and ISO strings
+                    timestampMillis = isNaN(data.timestamp) 
+                        ? new Date(data.timestamp).getTime() 
+                        : parseInt(data.timestamp) * 1000;
+                } else if (typeof data.timestamp === 'number') {
+                    // Assume milliseconds if number is large, seconds if small
+                    timestampMillis = data.timestamp > 9999999999 
+                        ? data.timestamp 
+                        : data.timestamp * 1000;
+                } else {
+                    // Fallback to current time if timestamp is invalid
+                    timestampMillis = Date.now();
+                }
+
+                // Safely format date
+                let formattedDate;
+                try {
+                    formattedDate = new Date(timestampMillis).toISOString();
+                } catch (e) {
+                    formattedDate = new Date().toISOString();
+                }
+
                 return {
                     id: doc.id,
                     text: data.text,
                     direction: data.direction,
                     status: data.status,
-                    timestamp: data.timestamp?.toDate?.() || data.timestamp,
+                    timestamp: timestampMillis,
+                    formattedDate: formattedDate,
                     waId: data.waId
                 };
             });
 
+            // Final sort to ensure proper ordering
+            messages.sort((a, b) => a.timestamp - b.timestamp);
+
             return res.status(200).json(messages);
 
         } catch (queryError) {
-            // Fallback to client-side sorting if index isn't ready
             if (queryError.code === 9) { // FAILED_PRECONDITION
                 console.warn('Using fallback query (index may be building)');
 
@@ -254,21 +284,46 @@ server.get('/api/messages/:waNumber', async (req, res) => {
 
                 const messages = snapshot.docs.map(doc => {
                     const data = doc.data();
+                    
+                    // Same safe timestamp handling as above
+                    let timestampMillis;
+                    if (data.timestamp?.toMillis) {
+                        timestampMillis = data.timestamp.toMillis();
+                    } else if (typeof data.timestamp === 'string') {
+                        timestampMillis = isNaN(data.timestamp) 
+                            ? new Date(data.timestamp).getTime() 
+                            : parseInt(data.timestamp) * 1000;
+                    } else if (typeof data.timestamp === 'number') {
+                        timestampMillis = data.timestamp > 9999999999 
+                            ? data.timestamp 
+                            : data.timestamp * 1000;
+                    } else {
+                        timestampMillis = Date.now();
+                    }
+
+                    let formattedDate;
+                    try {
+                        formattedDate = new Date(timestampMillis).toISOString();
+                    } catch (e) {
+                        formattedDate = new Date().toISOString();
+                    }
+
                     return {
                         id: doc.id,
                         text: data.text,
                         direction: data.direction,
                         status: data.status,
-                        timestamp: data.timestamp?.toDate?.() || data.timestamp,
+                        timestamp: timestampMillis,
+                        formattedDate: formattedDate,
                         waId: data.waId
                     };
-                }).sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+                });
 
+                messages.sort((a, b) => a.timestamp - b.timestamp);
                 return res.status(200).json(messages);
             }
-            throw queryError; // Re-throw other errors
+            throw queryError;
         }
-
     } catch (error) {
         console.error('Fetch messages error:', error);
         res.status(500).json({
@@ -280,7 +335,7 @@ server.get('/api/messages/:waNumber', async (req, res) => {
     }
 });
 
-// Add this near your other API endpoints
+// API endpoint to send messages
 server.post('/api/wati/send-message', async (req, res) => {
     try {
       const { phone, message } = req.body;
@@ -307,7 +362,7 @@ server.post('/api/wati/send-message', async (req, res) => {
         waId: phone,
         direction: "outgoing",
         status: "sent",
-        timestamp: new Date().toISOString(),
+        timestamp: Timestamp.now(), // Use Firestore Timestamp
         rawData: {
           eventType: "sessionMessageSent",
           whatsappResponse: watiResponse.data
@@ -334,7 +389,7 @@ server.post('/api/wati/send-message', async (req, res) => {
         details: process.env.NODE_ENV === 'development' ? error.stack : undefined
       });
     }
-  });
+});
 
 // Start the server
 httpServer.listen(PORT, () => {
