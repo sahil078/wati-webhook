@@ -125,12 +125,21 @@ async function handleReadStatus(db, event) {
     return { status: 'read_status_updated' };
 }
 
-async function initiateChatWithTemplate(waNumber) {
+// Remove the initiateChatWithTemplate function and add this endpoint instead:
+server.post('/api/wati/send-template', async (req, res) => {
     try {
+        const { phone, templateName = "missed_appointment" } = req.body;
+        
+        // Validate required fields
+        if (!phone) {
+            return res.status(400).json({ error: "Phone number is required" });
+        }
+
+        // Send template message via WATI API
         const response = await axios.post(
-            `${WATI_BASE_URL}/sendTemplateMessage?whatsappNumber=${waNumber}`,
+            `${WATI_BASE_URL}/sendTemplateMessage?whatsappNumber=${phone}`,
             {
-                template_name: "missed_appointment",
+                template_name: templateName,
                 broadcast_name: `init_${Date.now()}`,
                 parameters: [{ name: "name", value: "Customer" }],
                 channel_number: "27772538155"
@@ -142,13 +151,50 @@ async function initiateChatWithTemplate(waNumber) {
                 }
             }
         );
-        return true;
-    } catch (error) {
-        console.error('Initiation error:', error.response?.data || error.message);
-        return false;
-    }
-}
 
+        // Create a record in Firestore
+        const messageData = {
+            waId: phone,
+            direction: "outgoing",
+            status: "sent",
+            type: "template",
+            templateName: templateName,
+            timestamp: Timestamp.now(),
+            rawData: {
+                eventType: "templateMessageSent",
+                templateName: templateName,
+                watiResponse: response.data
+            }
+        };
+
+        await db.collection('whatsapp_messages').add(messageData);
+        
+        return res.status(200).json({ 
+            success: true,
+            message: "Template message sent successfully",
+            templateUsed: templateName,
+            watiResponse: response.data
+        });
+
+    } catch (error) {
+        console.error('Error sending template:', error);
+        
+        const errorResponse = {
+            error: "Failed to send template message",
+            details: error.message,
+            templateName: req.body.templateName || "missed_appointment"
+        };
+        
+        if (error.response) {
+            errorResponse.watiError = {
+                status: error.response.status,
+                data: error.response.data
+            };
+        }
+        
+        return res.status(500).json(errorResponse);
+    }
+});
 // Webhook endpoint
 server.post('/webhook', async (req, res) => {
     try {
