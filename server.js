@@ -57,6 +57,55 @@ const WATI_API_TOKEN = process.env.WATI_API_TOKEN;
 
 const supportedMediaTypes = ['image', 'audio', 'video', 'voice', 'document', 'sticker'];
 
+// Helper function for safe timestamp conversion
+function safeTimestampConversion(timestamp) {
+    try {
+        // If it's already a Firestore Timestamp
+        if (timestamp instanceof Timestamp) {
+            return timestamp;
+        }
+
+        // If it's undefined or null, return current time
+        if (timestamp === undefined || timestamp === null) {
+            return Timestamp.now();
+        }
+
+        // If it's a string that might be a number
+        if (typeof timestamp === 'string') {
+            // Remove any non-numeric characters
+            const numericTimestamp = timestamp.replace(/\D/g, '');
+
+            // Convert to number
+            const timestampNum = parseInt(numericTimestamp);
+
+            if (isNaN(timestampNum)) {
+                return Timestamp.now();
+            }
+
+            // If it's in seconds format (10 digits), convert to milliseconds
+            if (numericTimestamp.length === 10) {
+                return Timestamp.fromMillis(timestampNum * 1000);
+            }
+            // Otherwise assume it's milliseconds
+            return Timestamp.fromMillis(timestampNum);
+        }
+
+        // If it's a number
+        if (typeof timestamp === 'number') {
+            // If it's in seconds format (10 digits), convert to milliseconds
+            if (timestamp < 9999999999) {
+                return Timestamp.fromMillis(timestamp * 1000);
+            }
+            return Timestamp.fromMillis(timestamp);
+        }
+
+        // Fallback to current time
+        return Timestamp.now();
+    } catch (error) {
+        console.error('Timestamp conversion error:', error);
+        return Timestamp.now();
+    }
+}
 
 // Add this helper function (can be placed with other utility functions)
 async function getAttachmentUrl(filename, mediaType) {
@@ -78,11 +127,10 @@ async function getAttachmentUrl(filename, mediaType) {
     }
 }
 
-
 async function handleMediaMessage(db, event) {
     const msgType = event.type;
     const dataObj = event;
-    
+
     if (!supportedMediaTypes.includes(msgType)) {
         await db.collection('webhook_responses').add({
             response: `⚠️ Unhandled type: ${msgType}`,
@@ -128,14 +176,14 @@ async function handleMediaMessage(db, event) {
     try {
         const attachmentRef = await db.collection('whatsapp_attachments').add(attachmentData);
         console.log(`Attachment saved with ID: ${attachmentRef.id}`);
-        return { 
+        return {
             status: 'media_processed',
             attachmentId: attachmentRef.id,
             type: msgType
         };
     } catch (error) {
         console.error('Attachment insert failed:', error);
-        return { 
+        return {
             status: 'media_insert_failed',
             error: error.message,
             type: msgType
@@ -150,7 +198,7 @@ async function handleMessage(db, event) {
         waId: event.waId,
         text: event.text,
         type: event.type,
-        timestamp: event.timestamp ? Timestamp.fromMillis(parseInt(event.timestamp) * 1000) : Timestamp.now(),
+        timestamp: safeTimestampConversion(event.timestamp),
         status: 'received',
         direction: 'incoming',
         rawData: event
@@ -167,7 +215,7 @@ async function handleTemplateMessage(db, event) {
         text: event.text,
         type: 'template',
         templateName: event.templateName,
-        timestamp: event.created ? Timestamp.fromMillis(new Date(event.created).getTime()) : Timestamp.now(),
+        timestamp: safeTimestampConversion(event.created),
         status: event.statusString?.toLowerCase() || 'sent',
         direction: 'outgoing',
         rawData: event
@@ -183,7 +231,7 @@ async function handleSessionMessage(db, event) {
         waId: event.waId,
         text: event.text,
         type: 'session',
-        timestamp: event.timestamp ? Timestamp.fromMillis(new Date(event.timestamp).getTime()) : Timestamp.now(),
+        timestamp: safeTimestampConversion(event.timestamp),
         status: event.statusString?.toLowerCase() || 'sent',
         direction: 'outgoing',
         rawData: event
@@ -194,24 +242,56 @@ async function handleSessionMessage(db, event) {
 }
 
 async function handleDeliveryStatus(db, event) {
-    // Update the existing message with delivery status
     const messageRef = db.collection('whatsapp_messages').doc(event.id);
-    await messageRef.update({
-        status: 'delivered',
-        deliveredAt: Timestamp.fromMillis(parseInt(event.timestamp) * 1000),
-        rawDeliveryData: event
-    });
+    const doc = await messageRef.get();
+
+    if (!doc.exists) {
+        // Create the document if it doesn't exist
+        await messageRef.set({
+            id: event.id,
+            waId: event.waId || event.whatsappMessageId || 'unknown',
+            text: event.text || '',
+            type: event.type || 'text',
+            timestamp: safeTimestampConversion(event.timestamp),
+            status: 'delivered',
+            deliveredAt: safeTimestampConversion(event.timestamp),
+            rawDeliveryData: event
+        });
+    } else {
+        // Update existing document
+        await messageRef.update({
+            status: 'delivered',
+            deliveredAt: safeTimestampConversion(event.timestamp),
+            rawDeliveryData: event
+        });
+    }
     return { status: 'delivery_status_updated' };
 }
 
 async function handleReadStatus(db, event) {
-    // Update the existing message with read status
     const messageRef = db.collection('whatsapp_messages').doc(event.id);
-    await messageRef.update({
-        status: 'read',
-        readAt: Timestamp.fromMillis(parseInt(event.timestamp) * 1000),
-        rawReadData: event
-    });
+    const doc = await messageRef.get();
+
+    if (!doc.exists) {
+        // Create the document if it doesn't exist
+        await messageRef.set({
+            id: event.id,
+            waId: event.waId || event.whatsappMessageId || 'unknown',
+            text: event.text || '',
+            type: event.type || 'text',
+            timestamp: safeTimestampConversion(event.timestamp),
+            status: 'read',
+            readAt: safeTimestampConversion(event.timestamp),
+            rawReadData: event
+        });
+    } else {
+        // Update existing document
+        await messageRef.update({
+            status: 'read',
+            readAt: safeTimestampConversion(event.timestamp),
+            rawReadData: event
+        });
+    }
     return { status: 'read_status_updated' };
 }
 
@@ -285,6 +365,7 @@ server.post('/api/wati/send-template', async (req, res) => {
         return res.status(500).json(errorResponse);
     }
 });
+
 // Webhook endpoint
 server.post('/webhook', async (req, res) => {
     try {
@@ -341,6 +422,7 @@ server.post('/webhook', async (req, res) => {
         res.status(500).json({ error: 'Internal server error' });
     }
 });
+
 // API endpoint to get messages
 server.get('/api/messages/:waNumber', async (req, res) => {
     try {
@@ -361,7 +443,6 @@ server.get('/api/messages/:waNumber', async (req, res) => {
             if (snapshot.empty) {
                 return res.status(200).json([]);
             }
-
 
             const messages = snapshot.docs.map(doc => {
                 const data = doc.data();
@@ -526,6 +607,60 @@ server.post('/api/wati/send-message', async (req, res) => {
         });
     }
 });
+
+// GET /api/contacts
+server.get('/api/contacts', async (req, res) => {
+    try {
+        const snapshot = await db.collection('whatsapp_messages').get();
+        const messages = snapshot.docs.map(doc => doc.data());
+
+        const contactMap = new Map();
+
+        console.log("Total messages fetched:", messages.length);
+        console.log("Message List", messages);
+
+        console.log("message sender name:", messages.rawData?.senderName);
+
+        // Process each message to extract contact information
+
+        for (const msg of messages) {
+            const rawData = msg.rawData || {};
+            const waId = msg.waId;
+            const name =
+                rawData.senderName ||
+                rawData.watiResponse?.contact?.fullName ||
+                rawData.watiResponse?.contact?.firstName ||
+                waId;
+            const timestamp = msg.timestamp?.toMillis?.() || Date.now();
+            const text = msg.text || "";
+
+            console.log("row data:", rawData);
+
+            console.log("name", name);
+            if (
+                !contactMap.has(waId) ||
+                timestamp > contactMap.get(waId).timestamp
+            ) {
+                contactMap.set(waId, {
+                    waId,
+                    name,
+                    lastMessage: text,
+                    timestamp,
+                });
+            }
+        }
+
+        const contacts = Array.from(contactMap.values()).sort(
+            (a, b) => b.timestamp - a.timestamp
+        );
+
+        res.status(200).json(contacts);
+    } catch (error) {
+        console.error('Error fetching contacts:', error);
+        res.status(500).json({ error: 'Failed to fetch contacts' });
+    }
+});
+
 
 // Start the server
 httpServer.listen(PORT, () => {
